@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Delete a Name</title>
+    </head>
+    <body>
+        <h1>Delete a name!</h1>
+        <p>Delete via first and last name. Case and space sensitive. Check the texting page if unsure</p>
+        <form action = "{% url 'texter:delete_person' %}" method = "post">
+            {% csrf_token %}
+            <label for="first" >First Name</label>
+            <input type = "text" name = "first"><br>
+            <label for="last" >Last Name</label>
+            <input type = "text" name = "last"><br>
+
+            <input type = "submit" value = "delete">
+        </form>
+    </body>
+</html>

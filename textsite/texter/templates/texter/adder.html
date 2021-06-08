@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Add a Name</title>
+    </head>
+    <body>
+        <h1>Add a name!</h1>
+        <form action = "{% url 'texter:add_person' %}" method = "post">
+            {% csrf_token %}
+            <label for="first" >First Name</label>
+            <input type = "text" name = "first"><br>
+            <label for="last" >Last Name</label>
+            <input type = "text" name = "last"><br>
+            <label for="number" >Number (xxxxxxxxxx)</label>
+            <input type = "text" name = "number"><br>
+            <input type = "submit" value = "Add">
+        </form>
+    </body>
+</html>

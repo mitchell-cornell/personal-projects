@@ -70,9 +70,10 @@ def message(request):
     link = link_dict[link[0]]
     link_txt = name_numbers.pop('link_text',[None])
     signature = name_numbers.pop('signature')
+    auth_token = name_numbers.pop('auth_tk')
 
     print(name_numbers)
     
-    send_messages(name_numbers,text[0],link,link_txt[0],signature[0])
+    send_messages(name_numbers,text[0],link,link_txt[0],signature[0],auth_token)
 
     return HttpResponseRedirect(reverse('texter:index'))

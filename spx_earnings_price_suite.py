@@ -26,6 +26,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from scipy.stats import spearmanr
 
 import spx_earnings_vs_price as base   # constituents, pull_prices, dedupe, edgar_eps
 
@@ -81,12 +82,13 @@ def scatter(ax, x, y, sectors, title, xlab, ylab, lim=(-100, 200), fit=True):
                    edgecolor="white", linewidth=0.3, label=s)
     ax.axhline(0, color="#999", lw=0.7)
     ax.axvline(0, color="#999", lw=0.7)
-    r = x.corr(y)
+    r = x.corr(y)                                   # Pearson (outlier-sensitive)
+    rho = spearmanr(x, y)[0]                         # Spearman rank (robust)
     if fit and x.notna().sum() > 3:
-        b, a = np.polyfit(x.clip(*lim), y.clip(*lim), 1)
+        b, a = np.polyfit(fx, fy, 1)                 # winsorized fit (clipped to axis)
         xs = np.array(lim)
         ax.plot(xs, a + b * xs, "--", color="#111", lw=1.3,
-                label=f"slope={b:.2f}, r={r:.2f}")
+                label=f"winsor. slope={b:.2f}\nr={r:.2f}  ρ={rho:.2f}")
     ax.set_xlim(*lim)
     ax.set_ylim(*lim)
     ax.set_title(title, fontsize=13)
@@ -96,7 +98,7 @@ def scatter(ax, x, y, sectors, title, xlab, ylab, lim=(-100, 200), fit=True):
     ax.set_axisbelow(True)
     for sp in ["top", "right"]:
         ax.spines[sp].set_visible(False)
-    return r
+    return r, rho
 
 
 def main():
@@ -137,6 +139,22 @@ def main():
     con["eps_ttm"] = con["cik"].map(ttm_growth)
     con["eps_q"] = con["cik"].map(q_yoy)     # latest quarter YoY == YTD-2026 (only Q1 out)
 
+    # Loss-base selection effect: names dropped because the year-ago base was <= 0
+    # (a % growth is undefined), which disproportionately removes turnaround names.
+    def lossbase_ttm(cik):
+        try:
+            return (fy24[cik] - q1_24[cik] + q1_25[cik]) <= 0
+        except KeyError:
+            return False
+    n_ttm_loss = int(con["cik"].map(lossbase_ttm).sum())
+    n_q_loss = int(con["cik"].map(lambda c: q1_25.get(c, 1) <= 0).sum())
+    NOTE_TTM = (f"TTM = FY - Q1_prior + Q1_latest (EDGAR). Price: Databento DBEQ.BASIC, "
+                f"split-adjusted. r=Pearson, ρ=Spearman rank; fit winsorized to axis "
+                f"(±200%). {n_ttm_loss} names excluded: year-ago EPS ≤ 0 (loss base).")
+    NOTE_Q = ("r=Pearson, ρ=Spearman rank; fit winsorized to axis. "
+              f"{n_q_loss} names excluded: year-ago Q1 EPS ≤ 0 (loss base) — this drops "
+              "many turnaround/high-flyer names (e.g. WDC, STX, INTC).")
+
     sectors = sorted(con["sector"].unique())
     pal = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b",
            "#e377c2", "#7f7f7f", "#bcbd22", "#17becf", "#393b79"]
@@ -146,16 +164,15 @@ def main():
     d = con.dropna(subset=["eps_ttm", "px_12m"])
     print(f"\n[Fig1] TTM: {len(d)} names")
     fig, ax = plt.subplots(figsize=(11, 8))
-    r = scatter(ax, d["eps_ttm"], d["px_12m"], d["sector"],
-                "S&P 500: TTM EPS growth vs trailing-12m price return",
-                "TTM diluted-EPS growth (%)", "trailing-12m price return (%)")
+    r, rho = scatter(ax, d["eps_ttm"], d["px_12m"], d["sector"],
+                     "S&P 500: TTM EPS growth vs trailing-12m price return",
+                     "TTM diluted-EPS growth (%)", "trailing-12m price return (%)")
     ax.legend(loc="upper left", fontsize=7.5, frameon=False, ncol=2)
-    ax.text(0, -0.09, "TTM = FY - Q1_prior + Q1_latest (EDGAR frames). "
-            "Price: Databento DBEQ.BASIC, split-adjusted. Axes clipped +/-200%.",
-            transform=ax.transAxes, fontsize=8, style="italic", color="#666")
+    ax.text(0, -0.10, NOTE_TTM, transform=ax.transAxes, fontsize=8,
+            style="italic", color="#666")
     fig.tight_layout()
     fig.savefig(f"{HERE}/spx_fig1_ttm.png", dpi=150, bbox_inches="tight")
-    print(f"       overall r={r:.3f}")
+    print(f"       Pearson r={r:.3f}  Spearman ρ={rho:.3f}")
 
     # ============ Figure 2: sector facet ============
     fig, axes = plt.subplots(3, 4, figsize=(16, 11), sharex=True, sharey=True)
@@ -163,29 +180,29 @@ def main():
     for ax, s in zip(axes.flat, sectors):
         sub = d[d["sector"] == s]
         rr = sub["eps_ttm"].corr(sub["px_12m"]) if len(sub) > 3 else np.nan
-        persec[s] = (len(sub), rr)
+        rho = spearmanr(sub["eps_ttm"], sub["px_12m"])[0] if len(sub) > 3 else np.nan
+        persec[s] = (len(sub), rr, rho)
         ax.scatter(sub["eps_ttm"].clip(-100, 200), sub["px_12m"].clip(-100, 200),
                    s=22, alpha=0.8, color=SECTOR_COLORS[s], edgecolor="white", linewidth=0.3)
         if len(sub) > 3:
             b, a = np.polyfit(sub["eps_ttm"].clip(-100, 200), sub["px_12m"].clip(-100, 200), 1)
             ax.plot([-100, 200], [a - 100 * b, a + 200 * b], "--", color="#111", lw=1)
         ax.axhline(0, color="#bbb", lw=0.6); ax.axvline(0, color="#bbb", lw=0.6)
-        ax.set_title(f"{s}  (n={len(sub)}, r={rr:.2f})", fontsize=10)
+        ax.set_title(f"{s}  (n={len(sub)}, r={rr:.2f}, ρ={rho:.2f})", fontsize=9.5)
         ax.set_xlim(-100, 200); ax.set_ylim(-100, 200)
         ax.grid(True, color="#eee", lw=0.5); ax.set_axisbelow(True)
         for sp in ["top", "right"]: ax.spines[sp].set_visible(False)
     for ax in axes.flat[len(sectors):]:
         ax.axis("off")
-    fig.suptitle("TTM EPS growth vs trailing-12m price return, by GICS sector",
-                 fontsize=15, y=0.995)
+    fig.suptitle("TTM EPS growth vs trailing-12m price return, by GICS sector "
+                 "(r=Pearson, ρ=Spearman rank)", fontsize=14, y=0.997)
     fig.supxlabel("TTM diluted-EPS growth (%)", fontsize=11)
     fig.supylabel("trailing-12m price return (%)", fontsize=11)
     fig.tight_layout()
     fig.savefig(f"{HERE}/spx_fig2_sector_facet.png", dpi=150, bbox_inches="tight")
 
     # ============ Figure 3: sector medians ============
-    med = (d.groupby("sector")[["eps_ttm", "px_12m"]].median()
-           .join(pd.Series({s: persec[s][1] for s in persec}, name="r")))
+    med = d.groupby("sector")[["eps_ttm", "px_12m"]].median()
     fig, ax = plt.subplots(figsize=(11, 8))
     for s, row in med.iterrows():
         ax.scatter(row["eps_ttm"], row["px_12m"], s=140, color=SECTOR_COLORS[s],
@@ -195,7 +212,8 @@ def main():
     b, a = np.polyfit(med["eps_ttm"], med["px_12m"], 1)
     xs = np.array([med["eps_ttm"].min() - 3, med["eps_ttm"].max() + 3])
     ax.plot(xs, a + b * xs, "--", color="#111", lw=1.2,
-            label=f"slope={b:.2f}, r={med['eps_ttm'].corr(med['px_12m']):.2f}")
+            label=f"slope={b:.2f}, r={med['eps_ttm'].corr(med['px_12m']):.2f}, "
+                  f"ρ={spearmanr(med['eps_ttm'], med['px_12m'])[0]:.2f}")
     ax.axhline(0, color="#999", lw=0.7); ax.axvline(0, color="#999", lw=0.7)
     ax.set_title("Sector medians: TTM EPS growth vs trailing-12m price return", fontsize=13)
     ax.set_xlabel("median TTM diluted-EPS growth (%)", fontsize=10)
@@ -210,39 +228,38 @@ def main():
     dq = con.dropna(subset=["eps_q", "px_q1"])
     print(f"[Fig4] last-quarter: {len(dq)} names")
     fig, ax = plt.subplots(figsize=(11, 8))
-    rq = scatter(ax, dq["eps_q"], dq["px_q1"], dq["sector"],
-                 "S&P 500: Q1-2026 YoY EPS growth vs Q1-2026 price return",
-                 "Q1-2026 YoY diluted-EPS growth (%)", "price return during Q1-2026 (Jan-Mar, %)",
-                 lim=(-80, 120))
+    rq, rhoq = scatter(ax, dq["eps_q"], dq["px_q1"], dq["sector"],
+                       "S&P 500: Q1-2026 YoY EPS growth vs Q1-2026 price return",
+                       "Q1-2026 YoY diluted-EPS growth (%)", "price return during Q1-2026 (Jan-Mar, %)",
+                       lim=(-80, 120))
     ax.legend(loc="upper left", fontsize=7.5, frameon=False, ncol=2)
-    ax.text(0, -0.09, "Earnings period Jan-Mar 2026 paired with price return over the "
-            "same quarter. Latest fully-reported quarter (Q2-2026 not yet filed).",
-            transform=ax.transAxes, fontsize=8, style="italic", color="#666")
+    ax.text(0, -0.10, "Jan-Mar 2026 earnings paired with same-quarter price return "
+            "(Q2-2026 not yet filed). " + NOTE_Q, transform=ax.transAxes,
+            fontsize=8, style="italic", color="#666")
     fig.tight_layout()
     fig.savefig(f"{HERE}/spx_fig4_last_quarter.png", dpi=150, bbox_inches="tight")
-    print(f"       r={rq:.3f}")
+    print(f"       Pearson r={rq:.3f}  Spearman ρ={rhoq:.3f}")
 
     # ============ Figure 5: YTD ============
     dy = con.dropna(subset=["eps_q", "px_ytd"])
     print(f"[Fig5] YTD: {len(dy)} names")
     fig, ax = plt.subplots(figsize=(11, 8))
-    ry = scatter(ax, dy["eps_q"], dy["px_ytd"], dy["sector"],
-                 "S&P 500: YTD-2026 EPS growth vs YTD-2026 price return",
-                 "YTD-2026 EPS growth (%)  [= Q1'26 vs Q1'25; Q2 not filed]",
-                 "YTD-2026 price return (Dec 31 -> now, %)", lim=(-80, 150))
+    ry, rhoy = scatter(ax, dy["eps_q"], dy["px_ytd"], dy["sector"],
+                       "S&P 500: YTD-2026 EPS growth vs YTD-2026 price return",
+                       "YTD-2026 EPS growth (%)  [= Q1'26 vs Q1'25; Q2 not filed]",
+                       "YTD-2026 price return (Dec 31 -> now, %)", lim=(-80, 150))
     ax.legend(loc="upper left", fontsize=7.5, frameon=False, ncol=2)
-    ax.text(0, -0.09, "YTD earnings currently = Q1-2026 (only reported 2026 quarter). "
-            "Will extend to Q2 once it is filed.", transform=ax.transAxes,
-            fontsize=8, style="italic", color="#666")
+    ax.text(0, -0.10, "YTD earnings currently = Q1-2026 (only reported 2026 quarter). "
+            + NOTE_Q, transform=ax.transAxes, fontsize=8, style="italic", color="#666")
     fig.tight_layout()
     fig.savefig(f"{HERE}/spx_fig5_ytd.png", dpi=150, bbox_inches="tight")
-    print(f"       r={ry:.3f}")
+    print(f"       Pearson r={ry:.3f}  Spearman ρ={rhoy:.3f}")
 
     # ---- summary table ----
     print("\nPer-sector correlation (TTM EPS growth vs 12m price return):")
     for s in sectors:
-        n, rr = persec[s]
-        print(f"  {s:26s} n={n:3d}  r={rr:+.2f}")
+        n, rr, rho = persec[s]
+        print(f"  {s:26s} n={n:3d}  Pearson r={rr:+.2f}  Spearman ρ={rho:+.2f}")
     con.to_csv(f"{HERE}/spx_earnings_price_suite.csv", index=False)
     print("\nSaved 5 figures + spx_earnings_price_suite.csv")
 
